@@ -6,6 +6,7 @@ import { WhisperSettingsTab } from "src/WhisperSettingsTab";
 import { SettingsManager, WhisperSettings } from "src/SettingsManager";
 import { NativeAudioRecorder } from "src/AudioRecorder";
 import { RecordingStatus, StatusBar } from "src/StatusBar";
+
 export default class Whisper extends Plugin {
 	settings: WhisperSettings;
 	settingsManager: SettingsManager;
@@ -56,28 +57,19 @@ export default class Whisper extends Plugin {
 				} else {
 					this.statusBar.updateStatus(RecordingStatus.Processing);
 					const audioBlob = await this.recorder.stopRecording();
-					const extension = this.recorder
-						.getMimeType()
-						?.split("/")[1];
-					const fileName = `${new Date()
-						.toISOString()
-						.replace(/[:.]/g, "-")}.${extension}`;
+					const extension = this.recorder.getMimeType()?.split("/")[1];
+					const fileName = `${new Date().toISOString().replace(/[:.]/g, "-")}.${extension}`;
 					// Use audioBlob to send or save the recorded audio as needed
 					await this.audioHandler.sendAudioData(audioBlob, fileName);
 					this.statusBar.updateStatus(RecordingStatus.Idle);
 				}
 			},
-			hotkeys: [
-				{
-					modifiers: ["Alt"],
-					key: "Q",
-				},
-			],
 		});
 
+		// New command for selecting an audio file through Finder
 		this.addCommand({
-			id: "upload-audio-file",
-			name: "Upload audio file",
+			id: "select-audio-file",
+			name: "Select audio file for transcription",
 			callback: () => {
 				// Create an input element for file selection
 				const fileInput = document.createElement("input");
@@ -90,12 +82,35 @@ export default class Whisper extends Plugin {
 					if (files && files.length > 0) {
 						const file = files[0];
 						const fileName = file.name;
-						const audioBlob = file.slice(0, file.size, file.type);
-						// Use audioBlob to send or save the uploaded audio as needed
-						await this.audioHandler.sendAudioData(
-							audioBlob,
-							fileName
-						);
+
+						// Define chunk size in bytes (25MB)
+						const chunkSize = 25 * 1024 * 1024;
+						const numChunks = Math.ceil(file.size / chunkSize);
+
+						for (let i = 0; i < numChunks; i++) {
+							const start = i * chunkSize;
+							const end = Math.min(start + chunkSize, file.size);
+							const audioBlob = file.slice(start, end);
+
+							// Send each chunk
+							const transcription = await this.audioHandler.sendAudioData(audioBlob, `${fileName}_chunk_${i}`);
+
+							// Depending on settings, either paste at cursor or create new note
+							if (this.settings.appendToCursor) {
+								// Paste transcription at cursor in the active document
+								const editor = this.app.workspace.activeEditor?.editor;
+								if (editor) {
+									editor.replaceSelection(transcription);
+								}
+							} else {
+								// Create a new note for each chunk
+								const newNote = await this.app.vault.create(
+									`${fileName}_chunk_${i}.md`,
+									transcription
+								);
+								await this.app.workspace.openLinkText(newNote.basename, "", false);
+							}
+						}
 					}
 				};
 
